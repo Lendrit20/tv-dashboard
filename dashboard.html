@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Team Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #1a1a2e; }
+
+  #main-frame {
+    width: 100%; height: 100%; border: none;
+    position: absolute; top: 0; left: 0; z-index: 1;
+  }
+
+  /* --- Status bar (bottom) --- */
+  #status-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: 36px; background: rgba(0,0,0,0.7); color: #aaa;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 16px; font-size: 13px; z-index: 100;
+    opacity: 0; transition: opacity 0.3s;
+  }
+  #status-bar:hover { opacity: 1; }
+
+  #coffee-btn {
+    background: #6f4e37; color: white; border: none; border-radius: 6px;
+    padding: 5px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
+  }
+  #coffee-btn:hover { background: #8b6914; }
+
+  /* --- Coffee overlay --- */
+  #coffee-overlay {
+    display: none; position: fixed; inset: 0; z-index: 9999;
+    background: linear-gradient(135deg, #3e2723, #4e342e, #5d4037);
+    flex-direction: column; align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  #coffee-overlay.active { display: flex; }
+
+  .coffee-pot {
+    font-size: min(40vw, 40vh);
+    animation: wobble 2s ease-in-out infinite;
+    filter: drop-shadow(0 0 40px rgba(255,200,50,0.3));
+  }
+  .coffee-text {
+    color: #d7ccc8; font-size: min(6vw, 6vh); margin-top: 30px;
+    font-weight: 300; letter-spacing: 4px; text-transform: uppercase;
+  }
+  .coffee-subtext {
+    color: #8d6e63; font-size: min(2.5vw, 2.5vh); margin-top: 15px;
+  }
+
+  /* Steam animation */
+  .steam-container {
+    position: relative; width: min(40vw, 40vh); height: min(15vw, 15vh);
+  }
+  .steam {
+    position: absolute; bottom: 0;
+    width: 8px; background: rgba(255,255,255,0.15);
+    border-radius: 50%; filter: blur(6px);
+    animation: steam-rise 2s ease-out infinite;
+  }
+  .steam:nth-child(1) { left: 30%; animation-delay: 0s; height: 40px; }
+  .steam:nth-child(2) { left: 50%; animation-delay: 0.5s; height: 50px; }
+  .steam:nth-child(3) { left: 70%; animation-delay: 1s; height: 35px; }
+
+  @keyframes steam-rise {
+    0%   { opacity: 0; transform: translateY(0) scaleX(1); }
+    50%  { opacity: 0.6; transform: translateY(-60px) scaleX(2); }
+    100% { opacity: 0; transform: translateY(-120px) scaleX(3); }
+  }
+  @keyframes wobble {
+    0%, 100% { transform: rotate(-2deg); }
+    50%      { transform: rotate(2deg); }
+  }
+
+  /* --- Loading state --- */
+  #loading {
+    position: fixed; inset: 0; z-index: 50;
+    background: #1a1a2e; color: #eee;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font-size: 24px;
+  }
+  #loading.hidden { display: none; }
+  .spinner {
+    width: 50px; height: 50px; border: 4px solid #333;
+    border-top-color: #6c63ff; border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin-bottom: 20px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Error banner */
+  #error-banner {
+    display: none; position: fixed; top: 10px; right: 10px;
+    background: #c62828; color: white; padding: 8px 16px;
+    border-radius: 6px; font-size: 13px; z-index: 200;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  Loading dashboard...
+</div>
+
+<iframe id="main-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allowfullscreen></iframe>
+
+<div id="status-bar">
+  <span id="status-text">Dashboard</span>
+  <span>
+    <button id="coffee-btn" onclick="toggleCoffee()">Coffee Break</button>
+  </span>
+</div>
+
+<div id="coffee-overlay" onclick="toggleCoffee()">
+  <div class="steam-container">
+    <div class="steam"></div>
+    <div class="steam"></div>
+    <div class="steam"></div>
+  </div>
+  <div class="coffee-pot">&#9749;</div>
+  <div class="coffee-text">Coffee Break</div>
+  <div class="coffee-subtext">click anywhere to dismiss</div>
+</div>
+
+<div id="error-banner" id="error-banner"></div>
+
+<script>
+// =============================================================
+// CONFIG — Change this to your GitHub Gist raw URL
+// =============================================================
+// Paste your GitHub Gist raw URL here, e.g.:
+// "https://gist.githubusercontent.com/<user>/<gist-id>/raw/config.json"
+const CONFIG_URL = "CONFIG_GIST_RAW_URL_HERE";
+const CONFIG_POLL_SECONDS = 60;
+// =============================================================
+
+let currentConfig = null;
+let currentUrl = null;
+let coffeeActive = false;
+let configHash = "";
+let rotationIndex = 0;
+let rotationTimer = null;
+
+// --- Config fetching ---
+async function fetchConfig() {
+  try {
+    const resp = await fetch(CONFIG_URL + "?_=" + Date.now(), { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+
+    const newHash = JSON.stringify(data);
+    if (newHash !== configHash) {
+      configHash = newHash;
+      currentConfig = data;
+      console.log("Config updated:", data);
+      applyConfig();
+      startRotation(data);
+    }
+    hideError();
+  } catch (e) {
+    console.error("Config fetch failed:", e);
+    showError("Config fetch failed: " + e.message);
+    // On first load with no config, use defaults
+    if (!currentConfig) {
+      currentConfig = getDefaultConfig();
+      applyConfig();
+      startRotation(currentConfig);
+    }
+  }
+}
+
+function getDefaultConfig() {
+  return {
+    defaultUrls: [
+      "https://confluence.baloisenet.com/x/aYuE1Q#zoomOnLoad=true&auto-reload=97",
+      "https://confluence.baloisenet.com/spaces/AC/pages/3665113558/Depot+Extractor+Metrics+Dashboard+Prod#zoomOnLoad=true&auto-reload=97"
+    ],
+    rotationIntervalSeconds: 300,
+    schedule: [
+      {
+        url: "https://sv-gastronomie.ch/menu/Baloise,%20Basel/Mittagsmen%C3%BC%20Nord",
+        startTime: "11:15",
+        endTime: "11:45"
+      }
+    ],
+    coffeeBreakMinutes: 15
+  };
+}
+
+// --- Time-based scheduling ---
+function getActiveScheduledUrl(config) {
+  if (!config.schedule) return null;
+  const now = new Date();
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+
+  for (const entry of config.schedule) {
+    const [sh, sm] = entry.startTime.split(":").map(Number);
+    const [eh, em] = entry.endTime.split(":").map(Number);
+    const startMins = sh * 60 + sm;
+    const endMins = eh * 60 + em;
+
+    if (nowMins >= startMins && nowMins < endMins) {
+      return entry.url;
+    }
+  }
+  return null;
+}
+
+function getDefaultUrl(config) {
+  // Support both legacy "defaultUrl" (string) and new "defaultUrls" (array)
+  const urls = config.defaultUrls || (config.defaultUrl ? [config.defaultUrl] : []);
+  if (urls.length === 0) return null;
+  return urls[rotationIndex % urls.length];
+}
+
+function startRotation(config) {
+  if (rotationTimer) clearInterval(rotationTimer);
+  const urls = config.defaultUrls || (config.defaultUrl ? [config.defaultUrl] : []);
+  const interval = (config.rotationIntervalSeconds || 300) * 1000;
+
+  if (urls.length > 1) {
+    rotationTimer = setInterval(() => {
+      // Only rotate when no schedule override or forceUrl is active
+      if (!config.forceUrl && !getActiveScheduledUrl(config)) {
+        rotationIndex = (rotationIndex + 1) % urls.length;
+        const nextUrl = urls[rotationIndex];
+        // Force navigation even if URL hasn't changed shape
+        currentUrl = null;
+        navigateTo(nextUrl);
+      }
+    }, interval);
+  }
+}
+
+function applyConfig() {
+  if (!currentConfig) return;
+
+  // Check if there's a forced override or scheduled URL
+  const overrideUrl = currentConfig.forceUrl || getActiveScheduledUrl(currentConfig);
+
+  if (overrideUrl) {
+    navigateTo(overrideUrl);
+  } else {
+    navigateTo(getDefaultUrl(currentConfig));
+  }
+}
+
+function navigateTo(url) {
+  if (url === currentUrl) return;
+  currentUrl = url;
+
+  const frame = document.getElementById("main-frame");
+  frame.src = url;
+  document.getElementById("loading").classList.remove("hidden");
+
+  frame.onload = () => {
+    document.getElementById("loading").classList.add("hidden");
+  };
+  // Timeout fallback to hide loading
+  setTimeout(() => {
+    document.getElementById("loading").classList.add("hidden");
+  }, 5000);
+
+  const urls = currentConfig?.defaultUrls || [];
+  const rotationInfo = urls.length > 1 ? " | Page " + (rotationIndex + 1) + "/" + urls.length : "";
+  document.getElementById("status-text").textContent =
+    "Showing: " + new URL(url).hostname + rotationInfo + " | Next check: " + CONFIG_POLL_SECONDS + "s";
+}
+
+// --- Coffee break ---
+function toggleCoffee() {
+  coffeeActive = !coffeeActive;
+  document.getElementById("coffee-overlay").classList.toggle("active", coffeeActive);
+
+  if (coffeeActive && currentConfig?.coffeeBreakMinutes) {
+    // Auto-dismiss after configured duration
+    setTimeout(() => {
+      if (coffeeActive) toggleCoffee();
+    }, currentConfig.coffeeBreakMinutes * 60 * 1000);
+  }
+}
+
+// Keyboard shortcut: press 'C' for coffee
+document.addEventListener("keydown", (e) => {
+  if (e.key === "c" || e.key === "C") {
+    toggleCoffee();
+  }
+});
+
+// --- Error display ---
+function showError(msg) {
+  const el = document.getElementById("error-banner");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+function hideError() {
+  document.getElementById("error-banner").style.display = "none";
+}
+
+// --- Main loop ---
+fetchConfig();
+setInterval(() => {
+  fetchConfig();     // Reload config
+  applyConfig();     // Re-evaluate schedule even if config unchanged
+}, CONFIG_POLL_SECONDS * 1000);
+
+// Re-evaluate schedule every minute (independent of config polling)
+setInterval(() => {
+  applyConfig();
+}, 60 * 1000);
+</script>
+</body>
+</html>

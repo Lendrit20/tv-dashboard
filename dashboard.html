@@ -156,8 +156,10 @@ async function initCDP() {
 
     displayTabId = displayTab.id;
 
-    // Connect WebSocket to display tab
-    await connectDisplayTab(displayTab.webSocketDebuggerUrl);
+    // Connect WebSocket to display tab — build URL manually in case browser returns a bad one
+    const wsUrl = displayTab.webSocketDebuggerUrl || ("ws://localhost:9222/devtools/page/" + displayTab.id);
+    log("WebSocket URL: " + wsUrl);
+    await connectDisplayTab(wsUrl);
 
     // Activate display tab (bring to foreground)
     await fetch(CDP_URL + "/json/activate/" + displayTabId).catch(() => {});

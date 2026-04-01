@@ -125,7 +125,9 @@ function getActiveScheduledUrl() {
   return null;
 }
 
-function nav(url) {
+function nav(url, forceReload) {
+  // Skip if same URL and not forced
+  if (url === document.getElementById("currentUrl").textContent && !forceReload) return;
   try {
     displayWin = window.open(url, WINDOW_NAME);
     if (displayWin) {
@@ -165,7 +167,7 @@ function rotateNext() {
   var urls = getUrls();
   if (!urls.length) { log("No URLs configured"); return; }
   currentIdx = (currentIdx + 1) % urls.length;
-  nav(urls[currentIdx]);
+  nav(urls[currentIdx], true);
   renderQueue();
   resetCountdown();
 }

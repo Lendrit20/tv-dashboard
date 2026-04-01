@@ -71,7 +71,7 @@
 // CONFIG
 // =============================================================
 const CONFIG_URL = "https://gist.githubusercontent.com/Lendrit20/1507ca49040c910d087297a00e922ff2/raw/config.json";
-const CONFIG_POLL_MINUTES = 10;
+const CONFIG_POLL_SECONDS = 60;
 const WINDOW_NAME = "tvDashboardDisplay";
 // =============================================================
 
@@ -260,6 +260,15 @@ async function loadConfig() {
     log("Config loaded: " + getUrls().length + " URLs, " + getInterval() + "s interval");
     renderQueue();
 
+    // Check remote coffee break toggle
+    if (config.coffeeBreak && !coffeeActive) {
+      toggleCoffee();
+      log("Remote coffee break activated");
+    } else if (!config.coffeeBreak && coffeeActive) {
+      toggleCoffee();
+      log("Remote coffee break ended");
+    }
+
     // Auto-start if not running
     if (!running && getUrls().length > 0) {
       startRotation();
@@ -289,7 +298,7 @@ async function loadConfig() {
 // Auto-reload config periodically
 setInterval(function() {
   if (running) loadConfig();
-}, CONFIG_POLL_MINUTES * 60 * 1000);
+}, CONFIG_POLL_SECONDS * 1000);
 
 // Re-check schedule every minute
 setInterval(function() {

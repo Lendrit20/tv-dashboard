@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TV Dashboard Controller</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+  h1 { color: #00d4ff; margin-bottom: 16px; font-size: 22px; }
+
+  .status-panel {
+    background: #16213e; padding: 16px; border-radius: 8px; margin-bottom: 16px;
+  }
+  .status-panel .current { color: #0ff; word-break: break-all; font-size: 0.9em; }
+  .timer { font-size: 2em; color: #ffe600; margin: 8px 0; }
+
+  .controls { margin-bottom: 16px; }
+  .controls button {
+    padding: 10px 20px; margin: 4px; border: none; border-radius: 6px;
+    cursor: pointer; font-size: 1em; font-weight: 600;
+  }
+  .btn-start { background: #00c853; color: #000; }
+  .btn-stop { background: #ff1744; color: #fff; }
+  .btn-skip { background: #ffea00; color: #000; }
+  .btn-coffee { background: #795548; color: #fff; }
+  .btn-coffee.active { background: #ff9800; color: #1a1a2e; }
+  .btn-reload { background: #2979ff; color: #fff; }
+
+  .url-list { list-style: none; margin-top: 8px; }
+  .url-list li {
+    padding: 8px 12px; margin: 3px 0; background: #0f3460; border-radius: 4px;
+    word-break: break-all; font-size: 0.85em;
+  }
+  .url-list li.active { background: #e94560; color: #fff; font-weight: 700; }
+
+  .log {
+    background: #0a0a1a; padding: 10px; max-height: 160px; overflow-y: auto;
+    font-family: 'Consolas', monospace; font-size: 0.8em; border-radius: 4px; margin-top: 12px;
+  }
+
+  h3 { margin-top: 16px; margin-bottom: 6px; color: #888; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>TV Dashboard Controller</h1>
+
+<div class="status-panel">
+  <div>Status: <strong id="statusText">Stopped</strong></div>
+  <div>Showing: <span id="currentUrl" class="current">-</span></div>
+  <div class="timer">Next in: <span id="countdown">-</span>s</div>
+  <div>Window: <span id="winStatus">Not opened</span></div>
+</div>
+
+<div class="controls">
+  <button class="btn-start" onclick="startRotation()">Start</button>
+  <button class="btn-stop" onclick="stopRotation()">Stop</button>
+  <button class="btn-skip" onclick="skipNext()">Skip</button>
+  <button class="btn-coffee" id="coffeeBtn" onclick="toggleCoffee()">Coffee Break</button>
+  <button class="btn-reload" onclick="loadConfig()">Reload Config</button>
+</div>
+
+<h3>Rotation queue:</h3>
+<ul class="url-list" id="urlDisplay"></ul>
+
+<h3>Log:</h3>
+<div class="log" id="logArea"></div>
+
+<script>
+// =============================================================
+// CONFIG
+// =============================================================
+const CONFIG_URL = "https://gist.githubusercontent.com/Lendrit20/1507ca49040c910d087297a00e922ff2/raw/config.json";
+const CONFIG_POLL_MINUTES = 10;
+const WINDOW_NAME = "tvDashboardDisplay";
+// =============================================================
+
+let config = null;
+let displayWin = null;
+let currentIdx = 0;
+let running = false;
+let coffeeActive = false;
+let countdownId = null;
+let secsLeft = 0;
+let coffeeTimeout = null;
+
+function log(msg) {
+  console.log(msg);
+  const el = document.getElementById("logArea");
+  el.innerHTML += "[" + new Date().toLocaleTimeString() + "] " + msg + "\n";
+  el.scrollTop = el.scrollHeight;
+}
+
+function getUrls() {
+  if (!config) return [];
+  return config.defaultUrls || (config.defaultUrl ? [config.defaultUrl] : []);
+}
+
+function getInterval() {
+  return (config && config.rotationIntervalSeconds) || 300;
+}
+
+function renderQueue() {
+  const urls = getUrls();
+  document.getElementById("urlDisplay").innerHTML = urls.map(function(u, i) {
+    var cls = i === currentIdx ? "active" : "";
+    var host = "";
+    try { host = new URL(u).hostname; } catch(e) { host = u; }
+    return '<li class="' + cls + '">' + (i + 1) + ". " + host + "</li>";
+  }).join("");
+}
+
+function getActiveScheduledUrl() {
+  if (!config || !config.schedule) return null;
+  var now = new Date();
+  var nowMins = now.getHours() * 60 + now.getMinutes();
+  for (var i = 0; i < config.schedule.length; i++) {
+    var entry = config.schedule[i];
+    var sp = entry.startTime.split(":").map(Number);
+    var ep = entry.endTime.split(":").map(Number);
+    var startMins = sp[0] * 60 + sp[1];
+    var endMins = ep[0] * 60 + ep[1];
+    if (nowMins >= startMins && nowMins < endMins) return entry.url;
+  }
+  return null;
+}
+
+function nav(url) {
+  try {
+    displayWin = window.open(url, WINDOW_NAME);
+    if (displayWin) {
+      displayWin.focus();
+      document.getElementById("winStatus").textContent = "Open";
+      document.getElementById("currentUrl").textContent = url;
+      log("-> " + url);
+    } else {
+      document.getElementById("winStatus").textContent = "BLOCKED - allow popups for this site!";
+      log("Popup blocked! Allow popups for this site in Edge settings.");
+    }
+  } catch (e) {
+    log("Error: " + e.message);
+  }
+}
+
+function rotateNext() {
+  if (coffeeActive) return;
+
+  // Check forceUrl
+  if (config && config.forceUrl) {
+    nav(config.forceUrl);
+    resetCountdown();
+    return;
+  }
+
+  // Check schedule override
+  var override = getActiveScheduledUrl();
+  if (override) {
+    nav(override);
+    log("Schedule override active");
+    resetCountdown();
+    return;
+  }
+
+  // Normal rotation
+  var urls = getUrls();
+  if (!urls.length) { log("No URLs configured"); return; }
+  currentIdx = (currentIdx + 1) % urls.length;
+  nav(urls[currentIdx]);
+  renderQueue();
+  resetCountdown();
+}
+
+function resetCountdown() {
+  secsLeft = getInterval();
+  if (countdownId) clearInterval(countdownId);
+  countdownId = setInterval(function() {
+    secsLeft--;
+    document.getElementById("countdown").textContent = secsLeft;
+    if (secsLeft <= 0) rotateNext();
+  }, 1000);
+}
+
+function startRotation() {
+  if (running) return;
+  running = true;
+  coffeeActive = false;
+  document.getElementById("statusText").textContent = "Running";
+  document.getElementById("coffeeBtn").classList.remove("active");
+
+  var urls = getUrls();
+  if (!urls.length) { log("No URLs — load config first"); return; }
+
+  // Check for override first
+  var override = config.forceUrl || getActiveScheduledUrl();
+  if (override) {
+    nav(override);
+  } else {
+    nav(urls[currentIdx]);
+  }
+  renderQueue();
+  resetCountdown();
+  log("Started with " + urls.length + " URLs, " + getInterval() + "s interval");
+}
+
+function stopRotation() {
+  running = false;
+  if (countdownId) clearInterval(countdownId);
+  document.getElementById("statusText").textContent = "Stopped";
+  document.getElementById("countdown").textContent = "-";
+  log("Stopped");
+}
+
+function skipNext() {
+  if (!running) { startRotation(); return; }
+  rotateNext();
+}
+
+function toggleCoffee() {
+  coffeeActive = !coffeeActive;
+  var btn = document.getElementById("coffeeBtn");
+
+  if (coffeeActive) {
+    if (countdownId) clearInterval(countdownId);
+    document.getElementById("statusText").textContent = "Coffee Break";
+    document.getElementById("countdown").textContent = "PAUSED";
+    btn.classList.add("active");
+    btn.textContent = "End Coffee";
+
+    // Show coffee page in display window
+    nav(window.location.href.replace("index.html", "coffee.html"));
+    log("Coffee break ON");
+
+    // Auto-dismiss
+    if (config && config.coffeeBreakMinutes) {
+      coffeeTimeout = setTimeout(function() {
+        if (coffeeActive) toggleCoffee();
+      }, config.coffeeBreakMinutes * 60 * 1000);
+    }
+  } else {
+    document.getElementById("statusText").textContent = "Running";
+    btn.classList.remove("active");
+    btn.textContent = "Coffee Break";
+    if (coffeeTimeout) { clearTimeout(coffeeTimeout); coffeeTimeout = null; }
+    log("Coffee break OFF");
+
+    if (running) {
+      var urls = getUrls();
+      nav(urls[currentIdx]);
+      resetCountdown();
+    }
+  }
+}
+
+async function loadConfig() {
+  try {
+    log("Loading config...");
+    var resp = await fetch(CONFIG_URL + "?_=" + Date.now(), { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    config = await resp.json();
+    log("Config loaded: " + getUrls().length + " URLs, " + getInterval() + "s interval");
+    renderQueue();
+
+    // Auto-start if not running
+    if (!running && getUrls().length > 0) {
+      startRotation();
+    }
+  } catch (e) {
+    log("Config load failed: " + e.message);
+    // Use defaults
+    if (!config) {
+      config = {
+        defaultUrls: [
+          "https://confluence.baloisenet.com/x/aYuE1Q#zoomOnLoad=true&auto-reload=97",
+          "https://confluence.baloisenet.com/spaces/AC/pages/3665113558/Depot+Extractor+Metrics+Dashboard+Prod#zoomOnLoad=true&auto-reload=97"
+        ],
+        rotationIntervalSeconds: 300,
+        schedule: [{
+          url: "https://sv-gastronomie.ch/menu/Baloise,%20Basel/Mittagsmen%C3%BC%20Nord",
+          startTime: "11:15", endTime: "11:45"
+        }],
+        coffeeBreakMinutes: 15
+      };
+      log("Using default config");
+      renderQueue();
+    }
+  }
+}
+
+// Auto-reload config periodically
+setInterval(function() {
+  if (running) loadConfig();
+}, CONFIG_POLL_MINUTES * 60 * 1000);
+
+// Re-check schedule every minute
+setInterval(function() {
+  if (running && !coffeeActive) {
+    var override = getActiveScheduledUrl();
+    if (override) {
+      var cur = document.getElementById("currentUrl").textContent;
+      if (cur !== override) {
+        nav(override);
+        log("Schedule override activated");
+      }
+    }
+  }
+}, 60 * 1000);
+
+// Start
+loadConfig();
+log("Controller ready. Allow popups for this site, then click Start.");
+</script>
+</body>
+</html>

@@ -2,33 +2,12 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<title>Team Dashboard</title>
+<title>Dashboard Controller</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #1a1a2e; }
 
-  #main-frame {
-    width: 100%; height: 100%; border: none;
-    position: absolute; top: 0; left: 0; z-index: 1;
-  }
-
-  /* --- Status bar (bottom) --- */
-  #status-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    height: 36px; background: rgba(0,0,0,0.7); color: #aaa;
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 0 16px; font-size: 13px; z-index: 100;
-    opacity: 0; transition: opacity 0.3s;
-  }
-  #status-bar:hover { opacity: 1; }
-
-  #coffee-btn {
-    background: #6f4e37; color: white; border: none; border-radius: 6px;
-    padding: 5px 14px; cursor: pointer; font-size: 13px; font-weight: 600;
-  }
-  #coffee-btn:hover { background: #8b6914; }
-
-  /* --- Coffee overlay --- */
+  /* --- Coffee overlay (visible when controller tab is in foreground) --- */
   #coffee-overlay {
     display: none; position: fixed; inset: 0; z-index: 9999;
     background: linear-gradient(135deg, #3e2723, #4e342e, #5d4037);
@@ -50,7 +29,6 @@
     color: #8d6e63; font-size: min(2.5vw, 2.5vh); margin-top: 15px;
   }
 
-  /* Steam animation */
   .steam-container {
     position: relative; width: min(40vw, 40vh); height: min(15vw, 15vh);
   }
@@ -74,46 +52,35 @@
     50%      { transform: rotate(2deg); }
   }
 
-  /* --- Loading state --- */
-  #loading {
-    position: fixed; inset: 0; z-index: 50;
-    background: #1a1a2e; color: #eee;
+  /* --- Controller status screen --- */
+  #controller-status {
+    position: fixed; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    font-size: 24px;
+    color: #eee; font-size: 18px; text-align: center; padding: 40px;
   }
-  #loading.hidden { display: none; }
-  .spinner {
-    width: 50px; height: 50px; border: 4px solid #333;
-    border-top-color: #6c63ff; border-radius: 50%;
-    animation: spin 0.8s linear infinite; margin-bottom: 20px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  #controller-status h1 { font-size: 28px; margin-bottom: 20px; color: #6c63ff; }
+  #controller-status .info { color: #888; font-size: 14px; margin-top: 10px; }
+  #controller-status .status { color: #4caf50; margin-top: 20px; font-size: 16px; }
+  #controller-status .error { color: #f44336; }
 
-  /* Error banner */
-  #error-banner {
-    display: none; position: fixed; top: 10px; right: 10px;
-    background: #c62828; color: white; padding: 8px 16px;
-    border-radius: 6px; font-size: 13px; z-index: 200;
+  #log {
+    margin-top: 30px; text-align: left; font-family: monospace; font-size: 12px;
+    color: #666; max-height: 200px; overflow-y: auto; width: 80%; max-width: 600px;
   }
+  #log div { padding: 2px 0; border-bottom: 1px solid #222; }
 </style>
 </head>
 <body>
 
-<div id="loading">
-  <div class="spinner"></div>
-  Loading dashboard...
+<div id="controller-status">
+  <h1>Dashboard Controller</h1>
+  <div id="status-msg">Connecting to CDP on port 9222...</div>
+  <div class="info">This tab controls the display tab via Chrome DevTools Protocol.</div>
+  <div class="info">Press <b>C</b> for coffee break. The display tab shows your dashboards.</div>
+  <div id="log"></div>
 </div>
 
-<iframe id="main-frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" allowfullscreen></iframe>
-
-<div id="status-bar">
-  <span id="status-text">Dashboard</span>
-  <span>
-    <button id="coffee-btn" onclick="toggleCoffee()">Coffee Break</button>
-  </span>
-</div>
-
-<div id="coffee-overlay" onclick="toggleCoffee()">
+<div id="coffee-overlay" onclick="endCoffee()">
   <div class="steam-container">
     <div class="steam"></div>
     <div class="steam"></div>
@@ -121,15 +88,14 @@
   </div>
   <div class="coffee-pot">&#9749;</div>
   <div class="coffee-text">Coffee Break</div>
-  <div class="coffee-subtext">click anywhere to dismiss</div>
+  <div class="coffee-subtext">click anywhere or press C to dismiss</div>
 </div>
-
-<div id="error-banner" id="error-banner"></div>
 
 <script>
 // =============================================================
-// CONFIG — Change this to your GitHub Gist raw URL
+// CONFIG
 // =============================================================
+const CDP_URL = "http://localhost:9222";
 const CONFIG_URL = "https://gist.githubusercontent.com/Lendrit20/1507ca49040c910d087297a00e922ff2/raw/config.json";
 const CONFIG_POLL_SECONDS = 60;
 // =============================================================
@@ -140,6 +106,108 @@ let coffeeActive = false;
 let configHash = "";
 let rotationIndex = 0;
 let rotationTimer = null;
+let displayTabId = null;
+let dashboardTabId = null;
+let displayWs = null;
+let cdpMessageId = 0;
+
+function log(msg) {
+  console.log(msg);
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString() + " — " + msg;
+  el.prepend(line);
+  // Keep only last 20 lines
+  while (el.children.length > 20) el.removeChild(el.lastChild);
+}
+
+function setStatus(msg, isError) {
+  const el = document.getElementById("status-msg");
+  el.textContent = msg;
+  el.className = isError ? "status error" : "status";
+}
+
+// --- CDP ---
+async function initCDP() {
+  try {
+    // List existing tabs
+    const resp = await fetch(CDP_URL + "/json");
+    const tabs = await resp.json();
+    log("Found " + tabs.length + " tab(s)");
+
+    // Find our controller tab
+    const dashTab = tabs.find(t => t.url.includes("dashboard"));
+    if (dashTab) dashboardTabId = dashTab.id;
+
+    // Create a new display tab
+    const newTab = await (await fetch(CDP_URL + "/json/new?about:blank")).json();
+    displayTabId = newTab.id;
+    log("Created display tab: " + displayTabId);
+
+    // Connect WebSocket to display tab
+    await connectDisplayTab(newTab.webSocketDebuggerUrl);
+
+    // Activate display tab (bring to foreground)
+    await fetch(CDP_URL + "/json/activate/" + displayTabId);
+
+    setStatus("Connected. Display tab active.", false);
+
+    // Start config polling
+    await fetchConfig();
+    setInterval(() => { fetchConfig(); applyConfig(); }, CONFIG_POLL_SECONDS * 1000);
+    setInterval(applyConfig, 60 * 1000);
+
+  } catch (e) {
+    log("CDP init failed: " + e.message);
+    setStatus("CDP connection failed. Is Chrome running with --remote-debugging-port=9222?", true);
+
+    // Retry after 5 seconds
+    setTimeout(initCDP, 5000);
+  }
+}
+
+function connectDisplayTab(wsUrl) {
+  return new Promise((resolve, reject) => {
+    displayWs = new WebSocket(wsUrl);
+    displayWs.onopen = () => {
+      log("WebSocket connected to display tab");
+      resolve();
+    };
+    displayWs.onerror = (e) => {
+      log("WebSocket error");
+      reject(e);
+    };
+    displayWs.onclose = () => {
+      log("WebSocket closed — display tab may have been closed");
+      displayWs = null;
+    };
+  });
+}
+
+function cdpSend(method, params) {
+  if (!displayWs || displayWs.readyState !== WebSocket.OPEN) {
+    log("WebSocket not connected, skipping: " + method);
+    return;
+  }
+  displayWs.send(JSON.stringify({ id: ++cdpMessageId, method, params }));
+}
+
+function navigateTo(url) {
+  if (!url || url === currentUrl) return;
+  currentUrl = url;
+  log("Navigating to: " + new URL(url).hostname);
+
+  cdpSend("Page.navigate", { url });
+
+  // Bring display tab to foreground (in case we're in coffee break view)
+  if (!coffeeActive) {
+    fetch(CDP_URL + "/json/activate/" + displayTabId).catch(() => {});
+  }
+
+  const urls = currentConfig?.defaultUrls || [];
+  const rotationInfo = urls.length > 1 ? " | Page " + (rotationIndex + 1) + "/" + urls.length : "";
+  setStatus("Showing: " + new URL(url).hostname + rotationInfo, false);
+}
 
 // --- Config fetching ---
 async function fetchConfig() {
@@ -152,15 +220,12 @@ async function fetchConfig() {
     if (newHash !== configHash) {
       configHash = newHash;
       currentConfig = data;
-      console.log("Config updated:", data);
+      log("Config updated");
       applyConfig();
       startRotation(data);
     }
-    hideError();
   } catch (e) {
-    console.error("Config fetch failed:", e);
-    showError("Config fetch failed: " + e.message);
-    // On first load with no config, use defaults
+    log("Config fetch failed: " + e.message);
     if (!currentConfig) {
       currentConfig = getDefaultConfig();
       applyConfig();
@@ -176,38 +241,29 @@ function getDefaultConfig() {
       "https://confluence.baloisenet.com/spaces/AC/pages/3665113558/Depot+Extractor+Metrics+Dashboard+Prod#zoomOnLoad=true&auto-reload=97"
     ],
     rotationIntervalSeconds: 300,
-    schedule: [
-      {
-        url: "https://sv-gastronomie.ch/menu/Baloise,%20Basel/Mittagsmen%C3%BC%20Nord",
-        startTime: "11:15",
-        endTime: "11:45"
-      }
-    ],
+    schedule: [{
+      url: "https://sv-gastronomie.ch/menu/Baloise,%20Basel/Mittagsmen%C3%BC%20Nord",
+      startTime: "11:15",
+      endTime: "11:45"
+    }],
     coffeeBreakMinutes: 15
   };
 }
 
-// --- Time-based scheduling ---
+// --- Rotation ---
 function getActiveScheduledUrl(config) {
   if (!config.schedule) return null;
   const now = new Date();
   const nowMins = now.getHours() * 60 + now.getMinutes();
-
   for (const entry of config.schedule) {
     const [sh, sm] = entry.startTime.split(":").map(Number);
     const [eh, em] = entry.endTime.split(":").map(Number);
-    const startMins = sh * 60 + sm;
-    const endMins = eh * 60 + em;
-
-    if (nowMins >= startMins && nowMins < endMins) {
-      return entry.url;
-    }
+    if (nowMins >= sh * 60 + sm && nowMins < eh * 60 + em) return entry.url;
   }
   return null;
 }
 
 function getDefaultUrl(config) {
-  // Support both legacy "defaultUrl" (string) and new "defaultUrls" (array)
   const urls = config.defaultUrls || (config.defaultUrl ? [config.defaultUrl] : []);
   if (urls.length === 0) return null;
   return urls[rotationIndex % urls.length];
@@ -220,13 +276,10 @@ function startRotation(config) {
 
   if (urls.length > 1) {
     rotationTimer = setInterval(() => {
-      // Only rotate when no schedule override or forceUrl is active
       if (!config.forceUrl && !getActiveScheduledUrl(config)) {
         rotationIndex = (rotationIndex + 1) % urls.length;
-        const nextUrl = urls[rotationIndex];
-        // Force navigation even if URL hasn't changed shape
-        currentUrl = null;
-        navigateTo(nextUrl);
+        currentUrl = null; // Force navigation
+        navigateTo(urls[rotationIndex]);
       }
     }, interval);
   }
@@ -234,80 +287,52 @@ function startRotation(config) {
 
 function applyConfig() {
   if (!currentConfig) return;
-
-  // Check if there's a forced override or scheduled URL
   const overrideUrl = currentConfig.forceUrl || getActiveScheduledUrl(currentConfig);
-
-  if (overrideUrl) {
-    navigateTo(overrideUrl);
-  } else {
-    navigateTo(getDefaultUrl(currentConfig));
-  }
-}
-
-function navigateTo(url) {
-  if (url === currentUrl) return;
-  currentUrl = url;
-
-  const frame = document.getElementById("main-frame");
-  frame.src = url;
-  document.getElementById("loading").classList.remove("hidden");
-
-  frame.onload = () => {
-    document.getElementById("loading").classList.add("hidden");
-  };
-  // Timeout fallback to hide loading
-  setTimeout(() => {
-    document.getElementById("loading").classList.add("hidden");
-  }, 5000);
-
-  const urls = currentConfig?.defaultUrls || [];
-  const rotationInfo = urls.length > 1 ? " | Page " + (rotationIndex + 1) + "/" + urls.length : "";
-  document.getElementById("status-text").textContent =
-    "Showing: " + new URL(url).hostname + rotationInfo + " | Next check: " + CONFIG_POLL_SECONDS + "s";
+  navigateTo(overrideUrl || getDefaultUrl(currentConfig));
 }
 
 // --- Coffee break ---
-function toggleCoffee() {
-  coffeeActive = !coffeeActive;
-  document.getElementById("coffee-overlay").classList.toggle("active", coffeeActive);
+function startCoffee() {
+  if (coffeeActive) return;
+  coffeeActive = true;
+  document.getElementById("coffee-overlay").classList.add("active");
+  log("Coffee break started");
 
-  if (coffeeActive && currentConfig?.coffeeBreakMinutes) {
-    // Auto-dismiss after configured duration
-    setTimeout(() => {
-      if (coffeeActive) toggleCoffee();
-    }, currentConfig.coffeeBreakMinutes * 60 * 1000);
+  // Bring controller tab to foreground to show coffee overlay
+  if (dashboardTabId) {
+    fetch(CDP_URL + "/json/activate/" + dashboardTabId).catch(() => {});
+  }
+
+  // Auto-dismiss after configured duration
+  if (currentConfig?.coffeeBreakMinutes) {
+    setTimeout(() => { if (coffeeActive) endCoffee(); },
+      currentConfig.coffeeBreakMinutes * 60 * 1000);
   }
 }
 
-// Keyboard shortcut: press 'C' for coffee
-document.addEventListener("keydown", (e) => {
-  if (e.key === "c" || e.key === "C") {
-    toggleCoffee();
+function endCoffee() {
+  if (!coffeeActive) return;
+  coffeeActive = false;
+  document.getElementById("coffee-overlay").classList.remove("active");
+  log("Coffee break ended");
+
+  // Bring display tab back to foreground
+  if (displayTabId) {
+    fetch(CDP_URL + "/json/activate/" + displayTabId).catch(() => {});
   }
+}
+
+function toggleCoffee() {
+  coffeeActive ? endCoffee() : startCoffee();
+}
+
+// Keyboard: C for coffee
+document.addEventListener("keydown", (e) => {
+  if (e.key === "c" || e.key === "C") toggleCoffee();
 });
 
-// --- Error display ---
-function showError(msg) {
-  const el = document.getElementById("error-banner");
-  el.textContent = msg;
-  el.style.display = "block";
-}
-function hideError() {
-  document.getElementById("error-banner").style.display = "none";
-}
-
-// --- Main loop ---
-fetchConfig();
-setInterval(() => {
-  fetchConfig();     // Reload config
-  applyConfig();     // Re-evaluate schedule even if config unchanged
-}, CONFIG_POLL_SECONDS * 1000);
-
-// Re-evaluate schedule every minute (independent of config polling)
-setInterval(() => {
-  applyConfig();
-}, 60 * 1000);
+// --- Start ---
+initCDP();
 </script>
 </body>
 </html>

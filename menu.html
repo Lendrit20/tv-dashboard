@@ -119,8 +119,9 @@ const MENU_ID = "18231"; // Mittagsmenü Nord, Baloise Basel
 const LANG = "de-CH";
 
 async function getFirebaseToken() {
-  // Step 1: Get anonymous identity from Qnips
-  var resp = await fetch(QNIPS_API + "/NewIdentity", {
+  // Step 1: Get anonymous identity from Qnips (via CORS proxy)
+  var corsProxy = "https://corsproxy.io/?";
+  var resp = await fetch(corsProxy + encodeURIComponent(QNIPS_API + "/NewIdentity"), {
     method: "POST",
     headers: {
       "App-Brand": "svgroupch",
@@ -131,6 +132,12 @@ async function getFirebaseToken() {
   });
   if (!resp.ok) throw new Error("Qnips auth failed: " + resp.status);
   var data = await resp.json();
+  var content = data.Content || data;
+  console.log("Qnips response:", JSON.stringify(data));
+
+  if (!content.FirebaseCustomToken) {
+    throw new Error("No FirebaseCustomToken in response. Keys: " + Object.keys(content).join(", "));
+  }
 
   // Step 2: Exchange custom token for Firebase ID token
   var tokenResp = await fetch(
@@ -138,7 +145,7 @@ async function getFirebaseToken() {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: data.FirebaseCustomToken, returnSecureToken: true })
+      body: JSON.stringify({ token: content.FirebaseCustomToken, returnSecureToken: true })
     }
   );
   if (!tokenResp.ok) throw new Error("Firebase auth failed: " + tokenResp.status);
